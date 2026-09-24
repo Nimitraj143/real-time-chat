@@ -582,3 +582,78 @@ body, .app-shell, .panel, .bubble.recv, .msg-input, .chat-header, .composer-wrap
 .ticks.delivered { color: var(--text-muted); }
 .ticks.sent { color: var(--text-muted); }
 
+/* ══════════════ Voice recorder ══════════════ */
+.composer.recording { justify-content: space-between; }
+.record-indicator { flex: 1; display: flex; align-items: center; gap: 10px; padding: 0 14px; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: recPulse 1s infinite; flex-shrink: 0; }
+@keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.record-time { font-size: 14px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.record-hint { font-size: 12px; color: var(--text-soft); }
+.danger-ghost { color: var(--danger); border-color: var(--border); }
+.danger-ghost:hover { background: var(--bg-hover); border-color: var(--danger); }
+.mic-btn:hover { color: var(--accent); border-color: var(--accent); }
+.mic-denied-note { font-size: 12px; color: var(--danger); padding: 8px 16px 0; }
+
+/* ══════════════ Voice player (in bubble) ══════════════ */
+.bubble.voice-bubble {
+  padding: 10px 14px;
+  min-width: 190px;
+  max-width: 240px;
+  background: var(--a1) !important;
+  box-shadow: none;
+}
+.bubble.recv.voice-bubble {
+  background: var(--bg-recv) !important;
+  box-shadow: var(--bubble-recv-shadow);
+}
+.voice-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.voice-play-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, .25);
+  color: #fff;
+  transition: background .15s;
+}
+.voice-play-btn:hover { background: rgba(255, 255, 255, .35); }
+.bubble.recv .voice-play-btn { background: var(--a1); color: #fff; }
+.bubble.recv .voice-play-btn:hover { background: var(--a2); }
+
+.voice-track {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .3);
+  cursor: pointer;
+  position: relative;
+}
+.bubble.recv .voice-track { background: var(--border); }
+.voice-track-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #fff;
+  transition: width .1s linear;
+}
+.bubble.recv .voice-track-fill { background: var(--a1); }
+
+.voice-duration {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, .85);
+  flex-shrink: 0;
+  min-width: 30px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.bubble.recv .voice-duration { color: var(--text-soft); }
+
