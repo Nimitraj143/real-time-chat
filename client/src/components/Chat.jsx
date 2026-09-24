@@ -478,8 +478,6 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
           </p>
         </div>
         <div className="head-actions">
-          <button className="icon-btn" title="Call"><Phone size={17} /></button>
-          <button className="icon-btn" title="Video call"><Video size={17} /></button>
           <button className="icon-btn" title="More"><EllipsisVertical size={17} /></button>
         </div>
       </div>
