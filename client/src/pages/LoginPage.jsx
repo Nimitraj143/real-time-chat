@@ -91,7 +91,7 @@ export default function LoginPage() {
     setError("");
     const endpoint = isRegister ? "register" : "login";
     try {
-      const { data } = await axios.post(`http://localhost:5000/api/auth/${endpoint}`, { username, password });
+      const { data } = await axios.post(`https://real-time-chat-vt6f.onrender.com/api/auth/${endpoint}`, { username, password });
       localStorage.setItem("token", data.token);
       localStorage.setItem("username", data.username);
       navigate("/chat");

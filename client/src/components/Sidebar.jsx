@@ -24,7 +24,7 @@ export default function Sidebar({
     const t = setTimeout(async () => {
       try {
         const { data } = await axios.get(
-          `http://localhost:5000/api/users/search?q=${encodeURIComponent(search)}`,
+          `https://real-time-chat-vt6f.onrender.com/api/users/search?q=${encodeURIComponent(search)}`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         setResults(data);

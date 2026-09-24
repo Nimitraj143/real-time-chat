@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 
 const TYPING_TIMEOUT = 2000;
-const API = "http://localhost:5000";
+const API = "https://real-time-chat-vt6f.onrender.com";
 
 const EMOJIS = [
   "😀","😂","🥹","😍","😘","😎","🤔","😅",
