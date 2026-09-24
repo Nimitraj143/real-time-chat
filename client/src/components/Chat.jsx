@@ -178,7 +178,7 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
       headers: { Authorization: `Bearer ${token}` }
     }).then(r => setMessages(r.data)).catch(err => console.error("Failed to load messages:", err));
 
-    socket.emit("join_conversation", conv._id);
+    socket.emit("join_conversation", { convId: conv._id, username });;
     socket.emit("markAsSeen", { conversationId: conv._id, userId: username });
 
     const handleIncoming = (msg) => {
@@ -214,7 +214,7 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
       socket.off("message_deleted", handleDeleted);
       socket.off("messagesSeen", handleSeen);
       socket.off("message_edited", handleEdited);
-      socket.emit("leave_conversation", conv._id);
+      socket.emit("leave_conversation", { convId: conv._id, username });
       if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
       stopRecording(true);   // safety: conversation switch hote hi recording band
     };
