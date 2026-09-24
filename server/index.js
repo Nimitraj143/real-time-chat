@@ -48,6 +48,7 @@ app.use("/api/users",         require("./routes/users"));
 app.use("/api/conversations", require("./routes/conversations"));
 
 const onlineUsers = {};
+const activeConv  = {};
 
 io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
@@ -64,8 +65,15 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("initial_last_seen error:", err); }
   });
 
-  socket.on("join_conversation", (convId) => socket.join(convId));
-  socket.on("leave_conversation", (convId) => socket.leave(convId));
+  socket.on("join_conversation", ({ convId, username }) => {
+  socket.join(convId);
+  activeConv[username] = convId;
+});
+
+socket.on("leave_conversation", ({ convId, username }) => {
+  socket.leave(convId);
+  if (activeConv[username] === convId) delete activeConv[username];
+});
 
   socket.on("send_message", async ({ convId, sender, content, type, fileUrl, fileName, duration, replyTo }) => {
     const conv = await Conversation.findById(convId);
@@ -90,6 +98,7 @@ io.on("connection", (socket) => {
     conv.markModified("hiddenFor");
 
     recipients.forEach(m => {
+      if (activeConv[m] === convId) return;
       const current = conv.unreadCount[m] || 0;
       conv.unreadCount[m] = current + 1;
     });
@@ -189,6 +198,7 @@ io.on("connection", (socket) => {
     for (const [username, id] of Object.entries(onlineUsers)) {
       if (id === socket.id) {
         delete onlineUsers[username];
+        delete activeConv[username];
         const now = new Date();
         try { await User.findOneAndUpdate({ username }, { lastSeen: now }); }
         catch (err) { console.error("lastSeen save error:", err); }
