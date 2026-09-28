@@ -89,6 +89,10 @@ export default function LoginPage() {
   const submit = async (e) => {
     e.preventDefault();
     setError("");
+    if (isRegister && password.length < 8) {
+      setError("Password must be at least 8 characters");
+      return;
+    }
     const endpoint = isRegister ? "register" : "login";
     try {
       const { data } = await axios.post(`https://real-time-chat-vt6f.onrender.com/api/auth/${endpoint}`, { username, password });
