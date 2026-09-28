@@ -19,7 +19,7 @@ const registerLimiter = limiterOpts(60 * 60 * 1000, 10, 'Too many accounts creat
 const forgotLimiter   = limiterOpts(15 * 60 * 1000, 5,  'Too many OTP requests. Try again after 15 minutes.');
 const resetLimiter    = limiterOpts(15 * 60 * 1000, 10, 'Too many attempts. Try again after 15 minutes.');
 
-// ---------- EMAIL (Brevo HTTP API — Render free par SMTP block hai) ----------
+// ---------- EMAIL (Brevo HTTP API) ----------
 async function sendOtpEmail(to, otp) {
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
@@ -62,18 +62,26 @@ router.post('/register', registerLimiter, async (req, res) => {
 
     const hashed = await bcrypt.hash(password, 10);
     const user   = await User.create({ username, email, password: hashed });
-    res.status(201).json({ token: makeToken(user), username, avatarUrl: user.avatarUrl });
+    res.status(201).json({ token: makeToken(user), username: user.username, avatarUrl: user.avatarUrl });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// ---------- LOGIN ----------
+// ---------- LOGIN (username ya email dono se) ----------
 router.post('/login', loginLimiter, async (req, res) => {
   try {
-    const { username, password } = req.body;
-    const user = await User.findOne({ username });
+    const id       = String(req.body.username || '').trim();
+    const password = req.body.password;
+
+    if (!id || !password) return res.status(400).json({ message: 'Username/email and password are required' });
+
+    const user = await User.findOne({
+      $or: [{ username: id }, { email: id.toLowerCase() }],
+    });
     if (!user) return res.status(400).json({ message: 'User not found' });
-    if (!await bcrypt.compare(password, user.password)) return res.status(400).json({ message: 'Wrong password' });
-    res.json({ token: makeToken(user), username, avatarUrl: user.avatarUrl });
+    if (!await bcrypt.compare(String(password), user.password))
+      return res.status(400).json({ message: 'Wrong password' });
+
+    res.json({ token: makeToken(user), username: user.username, avatarUrl: user.avatarUrl });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -92,7 +100,6 @@ router.post('/forgot-password', forgotLimiter, async (req, res) => {
       await user.save();
       await sendOtpEmail(email, otp);
     }
-    // email registered ho ya na ho, same jawab (taaki koi email guess na kar sake)
     res.json({ message: 'If this email is registered, an OTP has been sent.' });
   } catch (err) {
     console.error('forgot-password error:', err);
