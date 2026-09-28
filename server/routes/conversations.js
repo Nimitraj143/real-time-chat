@@ -33,33 +33,60 @@ router.post("/", auth, async (req, res) => {
   if (!conv) {
     conv = await Conversation.create({ members: [me, otherUser] });
   } else if (conv.hiddenFor.includes(me)) {
-    conv.hiddenFor = conv.hiddenFor.filter(u => u !== me);   // wapas dikhao, history clearedAt se filter hogi
+    conv.hiddenFor = conv.hiddenFor.filter(u => u !== me);
     await conv.save();
   }
   res.json({ ...conv.toObject(), unreadCount: conv.unreadCount?.[me] || 0 });
 });
 
+// ---------- MESSAGES (pagination) ----------
+// GET /:convId/messages?limit=30&before=<createdAt ISO>
+// Response: { messages: [...purane->naye], hasMore: true/false, pinned: msg|null }
 router.get("/:convId/messages", auth, async (req, res) => {
-  const me = req.user.username;
-  const conv = await Conversation.findById(req.params.convId);
-  const clearedAt = conv?.clearedAt?.[me] ? new Date(conv.clearedAt[me]) : null;
+  try {
+    const me = req.user.username;
+    const conv = await Conversation.findById(req.params.convId);
+    if (!conv || !conv.members.includes(me)) return res.status(403).json({ message: "Not allowed" });
 
-  const query = { conversationId: req.params.convId };
-  if (clearedAt) query.createdAt = { $gt: clearedAt };
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+    const clearedAt = conv.clearedAt?.[me] ? new Date(conv.clearedAt[me]) : null;
 
-  const messages = await Message.find(query).sort({ createdAt: 1 }).limit(200);
+    const createdAt = {};
+    if (clearedAt) createdAt.$gt = clearedAt;
+    if (req.query.before) {
+      const b = new Date(req.query.before);
+      if (!isNaN(b)) createdAt.$lt = b;
+    }
 
-  const result = messages
-    .filter(m => !m.deletedFor.includes(me))
-    .map(m => ({
+    const query = { conversationId: req.params.convId, deletedFor: { $ne: me } };
+    if (Object.keys(createdAt).length) query.createdAt = createdAt;
+
+    const fmt = (m) => ({
       ...m.toObject(),
       content: m.deletedForEveryone ? "This message was deleted" : m.content,
-    }));
+    });
 
-  res.json(result);
+    const docs    = await Message.find(query).sort({ createdAt: -1 }).limit(limit + 1);
+    const hasMore = docs.length > limit;
+    const messages = docs.slice(0, limit).reverse().map(fmt);
+
+    // pehli load par pinned message bhi bhejo (chahe wo purana ho)
+    let pinned = null;
+    if (!req.query.before) {
+      const pq = { conversationId: req.params.convId, pinned: true, deletedForEveryone: false, deletedFor: { $ne: me } };
+      if (clearedAt) pq.createdAt = { $gt: clearedAt };
+      const p = await Message.findOne(pq);
+      if (p) pinned = fmt(p);
+    }
+
+    res.json({ messages, hasMore, pinned });
+  } catch (err) {
+    console.error("get messages error:", err);
+    res.status(500).json({ message: "Could not load messages" });
+  }
 });
 
-router.delete("/:convId", auth, async (req, res) => {               // 👈 NEW — delete for me
+router.delete("/:convId", auth, async (req, res) => {
   const me = req.user.username;
   const conv = await Conversation.findById(req.params.convId);
   if (!conv) return res.status(404).json({ message: "Conversation not found" });

@@ -18,7 +18,7 @@ router.get("/", auth, async (req, res) => {
   res.json(users);
 });
 
-router.get("/me", auth, async (req, res) => {                          // 👈 NEW
+router.get("/me", auth, async (req, res) => {
   const me = await User.findOne({ username: req.user.username }).select("-password");
   res.json(me);
 });
@@ -31,14 +31,34 @@ router.get("/search", auth, async (req, res) => {
   res.json(users);
 });
 
-router.post("/avatar", auth, upload.single("avatar"), async (req, res) => {    // 👈 NEW
+// ---------- BLOCK USER ----------
+router.get("/blocked", auth, async (req, res) => {
+  const me = await User.findOne({ username: req.user.username }).select("blockedUsers");
+  res.json(me?.blockedUsers || []);
+});
+
+router.post("/block/:username", auth, async (req, res) => {
+  const target = req.params.username;
+  if (target === req.user.username) return res.status(400).json({ message: "You cannot block yourself" });
+  if (!await User.exists({ username: target })) return res.status(404).json({ message: "User not found" });
+  await User.updateOne({ username: req.user.username }, { $addToSet: { blockedUsers: target } });
+  res.json({ ok: true });
+});
+
+router.delete("/block/:username", auth, async (req, res) => {
+  await User.updateOne({ username: req.user.username }, { $pull: { blockedUsers: req.params.username } });
+  res.json({ ok: true });
+});
+
+// ---------- AVATAR ----------
+router.post("/avatar", auth, upload.single("avatar"), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: "No file uploaded" });
   const avatarUrl = `/uploads/${req.file.filename}`;
   await User.findOneAndUpdate({ username: req.user.username }, { avatarUrl });
   res.json({ avatarUrl });
 });
 
-router.delete("/avatar", auth, async (req, res) => {                           // 👈 NEW
+router.delete("/avatar", auth, async (req, res) => {
   await User.findOneAndUpdate({ username: req.user.username }, { avatarUrl: null });
   res.json({ ok: true });
 });

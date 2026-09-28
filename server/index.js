@@ -5,6 +5,7 @@ const http       = require("http");
 const path       = require("path");
 const fs         = require("fs");
 const multer     = require("multer");
+const rateLimit  = require("express-rate-limit");
 const { Server } = require("socket.io");
 const mongoose   = require("mongoose");
 const cors       = require("cors");
@@ -20,8 +21,20 @@ const io     = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
+// Render proxy ke peeche hai, warna rate limit sabko ek hi IP samjhega
+app.set("trust proxy", 1);
+
 app.use(cors());
 app.use(express.json());
+
+// ---------- GENERAL RATE LIMIT ----------
+app.use("/api", rateLimit({
+  windowMs: 60 * 1000,
+  limit: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many requests, slow down." },
+}));
 
 // ---------- FILE UPLOAD SETUP ----------
 const UPLOAD_DIR = path.join(__dirname, "uploads");
@@ -37,7 +50,15 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } });
 
-app.post("/api/upload", upload.single("file"), (req, res) => {
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many uploads, slow down." },
+});
+
+app.post("/api/upload", uploadLimiter, upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   res.json({ url: `/uploads/${req.file.filename}`, fileName: req.file.originalname });
 });
@@ -66,71 +87,93 @@ io.on("connection", (socket) => {
   });
 
   socket.on("join_conversation", ({ convId, username }) => {
-  socket.join(convId);
-  activeConv[username] = convId;
-});
+    socket.join(convId);
+    activeConv[username] = convId;
+  });
 
-socket.on("leave_conversation", ({ convId, username }) => {
-  socket.leave(convId);
-  if (activeConv[username] === convId) delete activeConv[username];
-});
+  socket.on("leave_conversation", ({ convId, username }) => {
+    socket.leave(convId);
+    if (activeConv[username] === convId) delete activeConv[username];
+  });
 
   socket.on("send_message", async ({ convId, sender, content, type, fileUrl, fileName, duration, replyTo }) => {
-    const conv = await Conversation.findById(convId);
-    if (!conv) return;
+    try {
+      const conv = await Conversation.findById(convId);
+      if (!conv || !conv.members.includes(sender)) return;
 
-    const recipients   = conv.members.filter(m => m !== sender);
-    const deliveredNow = recipients.some(m => onlineUsers[m]);
+      const recipients = conv.members.filter(m => m !== sender);
 
-    const msg = await Message.create({
-      conversationId: convId,
-      sender,
-      content: content || "",
-      type: type || "text",
-      fileUrl: fileUrl || null,
-      fileName: fileName || null,
-      duration: duration || null,
-      delivered: deliveredNow,
-      replyTo: replyTo || undefined,
-    });
+      // ---------- BLOCK CHECK ----------
+      if (!conv.isGroup && recipients.length === 1) {
+        const other = recipients[0];
+        const [meDoc, otherDoc] = await Promise.all([
+          User.findOne({ username: sender }).select("blockedUsers"),
+          User.findOne({ username: other }).select("blockedUsers"),
+        ]);
+        if (meDoc?.blockedUsers?.includes(other)) {
+          socket.emit("message_blocked", { convId, reason: "You blocked this user. Unblock to send messages." });
+          return;
+        }
+        if (otherDoc?.blockedUsers?.includes(sender)) {
+          // blocked hone ki baat reveal nahi karte
+          socket.emit("message_blocked", { convId, reason: "Message could not be delivered." });
+          return;
+        }
+      }
 
-    conv.hiddenFor = conv.hiddenFor.filter(u => !recipients.includes(u));
-    conv.markModified("hiddenFor");
+      const deliveredNow = recipients.some(m => onlineUsers[m]);
 
-    recipients.forEach(m => {
-      if (activeConv[m] === convId) return;
-      const current = conv.unreadCount[m] || 0;
-      conv.unreadCount[m] = current + 1;
-    });
-    conv.markModified("unreadCount");
-    conv.lastMessage     = type === "image" ? "📷 Photo" : type === "file" ? "📄 File" : type === "voice" ? "🎤 Voice message" : content;
-    conv.lastMessageTime = new Date();
-    await conv.save();
+      const msg = await Message.create({
+        conversationId: convId,
+        sender,
+        content: content || "",
+        type: type || "text",
+        fileUrl: fileUrl || null,
+        fileName: fileName || null,
+        duration: duration || null,
+        delivered: deliveredNow,
+        replyTo: replyTo || undefined,
+      });
 
-    io.to(convId).emit("receive_message", {
-      _id: msg._id,
-      conversationId: convId,
-      convId,
-      sender,
-      content,
-      type: msg.type,
-      fileUrl: msg.fileUrl,
-      fileName: msg.fileName,
-      duration: msg.duration,
-      createdAt: msg.createdAt,
-      seen: false,
-      delivered: msg.delivered,
-      edited: false,
-      replyTo: msg.replyTo,
-    });
+      conv.hiddenFor = conv.hiddenFor.filter(u => !recipients.includes(u));
+      conv.markModified("hiddenFor");
 
-    io.emit("conversation_updated", {
-      convId,
-      sender,
-      lastMessage: conv.lastMessage,
-      lastMessageTime: conv.lastMessageTime,
-      unreadCount: conv.unreadCount,
-    });
+      recipients.forEach(m => {
+        if (activeConv[m] === convId) return;
+        const current = conv.unreadCount[m] || 0;
+        conv.unreadCount[m] = current + 1;
+      });
+      conv.markModified("unreadCount");
+      conv.lastMessage     = type === "image" ? "📷 Photo" : type === "file" ? "📄 File" : type === "voice" ? "🎤 Voice message" : content;
+      conv.lastMessageTime = new Date();
+      await conv.save();
+
+      io.to(convId).emit("receive_message", {
+        _id: msg._id,
+        conversationId: convId,
+        convId,
+        sender,
+        content,
+        type: msg.type,
+        fileUrl: msg.fileUrl,
+        fileName: msg.fileName,
+        duration: msg.duration,
+        createdAt: msg.createdAt,
+        seen: false,
+        delivered: msg.delivered,
+        edited: false,
+        pinned: false,
+        replyTo: msg.replyTo,
+      });
+
+      io.emit("conversation_updated", {
+        convId,
+        sender,
+        lastMessage: conv.lastMessage,
+        lastMessageTime: conv.lastMessageTime,
+        unreadCount: conv.unreadCount,
+      });
+    } catch (err) { console.error("send_message error:", err); }
   });
 
   socket.on("edit_message", async ({ messageId, convId, newContent, username }) => {
@@ -140,6 +183,27 @@ socket.on("leave_conversation", ({ convId, username }) => {
     msg.edited = true;
     await msg.save();
     io.to(convId).emit("message_edited", { messageId, content: msg.content, edited: true });
+  });
+
+  // ---------- PIN MESSAGE (ek conversation mein ek hi pin) ----------
+  socket.on("pin_message", async ({ messageId, convId, username, pin }) => {
+    try {
+      const conv = await Conversation.findById(convId);
+      if (!conv || !conv.members.includes(username)) return;
+      const msg = await Message.findById(messageId);
+      if (!msg || msg.conversationId !== String(convId) || msg.deletedForEveryone) return;
+
+      if (pin) {
+        await Message.updateMany({ conversationId: String(convId), pinned: true }, { $set: { pinned: false } });
+        msg.pinned = true;
+        await msg.save();
+        io.to(convId).emit("pins_updated", { convId, pinned: msg.toObject() });
+      } else {
+        msg.pinned = false;
+        await msg.save();
+        io.to(convId).emit("pins_updated", { convId, pinned: null });
+      }
+    } catch (err) { console.error("pin_message error:", err); }
   });
 
   socket.on("typing", ({ convId, sender, receiver }) => {
@@ -171,12 +235,15 @@ socket.on("leave_conversation", ({ convId, username }) => {
     if (!msg) return;
     if (forEveryone) {
       if (msg.sender !== username) return;
+      const wasPinned = msg.pinned;
       msg.deletedForEveryone = true;
+      msg.pinned = false;
       msg.content = "";
       msg.fileUrl = null;
       msg.fileName = null;
       await msg.save();
       io.to(convId).emit("message_deleted", { messageId, forEveryone: true });
+      if (wasPinned) io.to(convId).emit("pins_updated", { convId, pinned: null });
     } else {
       if (!msg.deletedFor.includes(username)) {
         msg.deletedFor.push(username);

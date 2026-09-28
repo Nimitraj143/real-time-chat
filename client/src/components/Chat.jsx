@@ -1,13 +1,14 @@
-﻿import { Fragment, useEffect, useState, useRef } from "react";
+﻿import { Fragment, useEffect, useLayoutEffect, useState, useRef } from "react";
 import axios from "axios";
 import { socket } from "../socket";
 import {
   Phone, Video, EllipsisVertical, ArrowLeft, ArrowDown,
   Paperclip, Send, FileText, Smile, X, Check, CheckCheck,
-  Mic, Trash2, Play, Pause,
+  Mic, Trash2, Play, Pause, Pin,
 } from "lucide-react";
 
 const TYPING_TIMEOUT = 2000;
+const PAGE_SIZE = 30;
 const API = "https://real-time-chat-vt6f.onrender.com";
 
 const EMOJIS = [
@@ -52,6 +53,13 @@ function formatLastSeen(dateVal) {
   if (diffDay === 1) return "Last seen yesterday";
   return `Last seen ${new Date(dateVal).toLocaleDateString()}`;
 }
+function previewText(m) {
+  if (!m) return "";
+  if (m.type === "image") return "📷 Photo";
+  if (m.type === "voice") return "🎤 Voice message";
+  if (m.type === "file")  return "📄 File";
+  return m.content;
+}
 
 const avatarColors = [
   "linear-gradient(135deg,#ff8a9b,#ff7a8a)",
@@ -79,11 +87,11 @@ function TickIcon({ m }) {
   return <Check size={14} className="ticks sent" />;
 }
 
-// 👈 NEW — voice message player used inside a bubble
+// voice message player used inside a bubble
 function VoicePlayer({ src, duration, mine }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
-  const [progress, setProgress] = useState(0);   // 0..1
+  const [progress, setProgress] = useState(0);
   const [current, setCurrent] = useState(0);
 
   const toggle = () => {
@@ -141,7 +149,15 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
   const [replyTarget, setReplyTarget] = useState(null);
   const [highlightId, setHighlightId] = useState(null);
 
-  // 👈 NEW — voice recording state
+  // 👈 NEW — pagination / pin / block state
+  const [hasMore, setHasMore]           = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [pinnedMsg, setPinnedMsg]       = useState(null);
+  const [blockedByMe, setBlockedByMe]   = useState(false);
+  const [showHeadMenu, setShowHeadMenu] = useState(false);
+  const [blockNote, setBlockNote]       = useState("");
+
+  // voice recording state
   const [isRecording, setIsRecording] = useState(false);
   const [recordTime, setRecordTime]   = useState(0);
   const [micDenied, setMicDenied]     = useState(false);
@@ -154,17 +170,31 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
   const isTypingRef    = useRef(false);
   const typingTimerRef = useRef(null);
 
-  // 👈 NEW — recorder refs
+  // 👈 NEW — purane messages load hone par scroll position bachane ke liye
+  const prependHeightRef = useRef(null);
+  const skipScrollRef    = useRef(false);
+  const blockNoteTimer   = useRef(null);
+
+  // recorder refs
   const mediaRecorderRef = useRef(null);
   const audioChunksRef   = useRef([]);
   const streamRef        = useRef(null);
   const recordTimerRef   = useRef(null);
+
+  const authHeaders = { headers: { Authorization: `Bearer ${token}` } };
 
   const otherUser = conv.otherUser || conv.members?.find(m => m !== username);
   const isOnline  = onlineUsers.includes(otherUser);
 
   useEffect(() => {
     if (!conv?._id) return;
+    let cancelled = false;
+
+    setMessages([]);
+    setHasMore(false);
+    setPinnedMsg(null);
+    setBlockNote("");
+    setShowHeadMenu(false);
     setSeenByOther(false);
     setTapId(null);
     setShowEmoji(false);
@@ -174,11 +204,23 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
     setReplyTarget(null);
     nearBottomRef.current = true;
 
+    // 👈 NEW — sirf latest 30 messages
     axios.get(`${API}/api/conversations/${conv._id}/messages`, {
-      headers: { Authorization: `Bearer ${token}` }
-    }).then(r => setMessages(r.data)).catch(err => console.error("Failed to load messages:", err));
+      params: { limit: PAGE_SIZE },
+      ...authHeaders,
+    }).then(r => {
+      if (cancelled) return;
+      setMessages(r.data.messages);
+      setHasMore(r.data.hasMore);
+      setPinnedMsg(r.data.pinned || null);
+    }).catch(err => console.error("Failed to load messages:", err));
 
-    socket.emit("join_conversation", { convId: conv._id, username });;
+    // 👈 NEW — kya maine is user ko block kiya hai?
+    axios.get(`${API}/api/users/blocked`, authHeaders)
+      .then(r => { if (!cancelled) setBlockedByMe(r.data.includes(otherUser)); })
+      .catch(err => console.error("Failed to load blocked list:", err));
+
+    socket.emit("join_conversation", { convId: conv._id, username });
     socket.emit("markAsSeen", { conversationId: conv._id, userId: username });
 
     const handleIncoming = (msg) => {
@@ -190,7 +232,7 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
     };
     const handleDeleted = ({ messageId, forEveryone }) => {
       setMessages(prev => forEveryone
-        ? prev.map(m => m._id === messageId ? { ...m, deletedForEveryone: true, content: "", fileUrl: null } : m)
+        ? prev.map(m => m._id === messageId ? { ...m, deletedForEveryone: true, content: "", fileUrl: null, pinned: false } : m)
         : prev.filter(m => m._id !== messageId)
       );
     };
@@ -202,20 +244,39 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
     };
     const handleEdited = ({ messageId, content, edited }) => {
       setMessages(prev => prev.map(m => m._id === messageId ? { ...m, content, edited } : m));
+      setPinnedMsg(p => (p && p._id === messageId ? { ...p, content, edited } : p));
+    };
+    // 👈 NEW
+    const handlePins = ({ convId, pinned }) => {
+      if (convId !== conv._id) return;
+      setPinnedMsg(pinned);
+      setMessages(prev => prev.map(m => ({ ...m, pinned: pinned ? m._id === pinned._id : false })));
+    };
+    const handleBlocked = ({ convId, reason }) => {
+      if (convId !== conv._id) return;
+      setBlockNote(reason);
+      if (blockNoteTimer.current) clearTimeout(blockNoteTimer.current);
+      blockNoteTimer.current = setTimeout(() => setBlockNote(""), 5000);
     };
 
     socket.on("receive_message", handleIncoming);
     socket.on("message_deleted", handleDeleted);
     socket.on("messagesSeen", handleSeen);
     socket.on("message_edited", handleEdited);
+    socket.on("pins_updated", handlePins);
+    socket.on("message_blocked", handleBlocked);
 
     return () => {
+      cancelled = true;
       socket.off("receive_message", handleIncoming);
       socket.off("message_deleted", handleDeleted);
       socket.off("messagesSeen", handleSeen);
       socket.off("message_edited", handleEdited);
+      socket.off("pins_updated", handlePins);
+      socket.off("message_blocked", handleBlocked);
       socket.emit("leave_conversation", { convId: conv._id, username });
       if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      if (blockNoteTimer.current) clearTimeout(blockNoteTimer.current);
       stopRecording(true);   // safety: conversation switch hote hi recording band
     };
   }, [conv?._id]);
@@ -229,7 +290,17 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
     return () => window.removeEventListener("keydown", onKey);
   }, [lightbox]);
 
+  // 👈 NEW — purane messages upar judne ke baad scroll position wahi rakho
+  useLayoutEffect(() => {
+    if (prependHeightRef.current === null) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight - prependHeightRef.current;
+    prependHeightRef.current = null;
+    skipScrollRef.current = true;
+  }, [messages]);
+
   useEffect(() => {
+    if (skipScrollRef.current) { skipScrollRef.current = false; return; }   // purane load hue toh neeche mat jao
     const last = messages[messages.length - 1];
     if (nearBottomRef.current || last?.sender === username) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -239,12 +310,35 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
   // cleanup on unmount
   useEffect(() => () => stopRecording(true), []);
 
+  // 👈 NEW — upar scroll karne par purane messages
+  const loadOlder = async () => {
+    if (loadingOlder || !hasMore || messages.length === 0) return;
+    setLoadingOlder(true);
+    try {
+      const { data } = await axios.get(`${API}/api/conversations/${conv._id}/messages`, {
+        params: { limit: PAGE_SIZE, before: messages[0].createdAt },
+        ...authHeaders,
+      });
+      prependHeightRef.current = scrollRef.current ? scrollRef.current.scrollHeight : null;
+      setMessages(prev => {
+        const ids = new Set(prev.map(m => m._id));
+        return [...data.messages.filter(m => !ids.has(m._id)), ...prev];
+      });
+      setHasMore(data.hasMore);
+    } catch (err) {
+      console.error("Failed to load older messages:", err);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
   const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
     nearBottomRef.current = dist < 120;
     setShowScrollBtn(dist > 120);
+    if (el.scrollTop < 80) loadOlder();
   };
 
   const scrollToBottom = () => bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -367,6 +461,30 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
     inputRef.current?.focus();
   };
 
+  // 👈 NEW — pin / unpin
+  const pinMessage = (m) => {
+    socket.emit("pin_message", { messageId: m._id, convId: conv._id, username, pin: !m.pinned });
+    setOpenMenuId(null);
+  };
+  const unpinCurrent = () => {
+    if (!pinnedMsg) return;
+    socket.emit("pin_message", { messageId: pinnedMsg._id, convId: conv._id, username, pin: false });
+  };
+
+  // 👈 NEW — block / unblock
+  const toggleBlock = async () => {
+    setShowHeadMenu(false);
+    try {
+      const url = `${API}/api/users/block/${encodeURIComponent(otherUser)}`;
+      if (blockedByMe) await axios.delete(url, authHeaders);
+      else await axios.post(url, {}, authHeaders);
+      setBlockedByMe(!blockedByMe);
+      setBlockNote("");
+    } catch (err) {
+      alert(err.response?.data?.message || "Action failed");
+    }
+  };
+
   // ══════════════ Voice recording ══════════════
   const startRecording = async () => {
     if (isRecording || uploading || pendingFile) return;
@@ -478,12 +596,40 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
           </p>
         </div>
         <div className="head-actions">
-          <button className="icon-btn" title="More"><EllipsisVertical size={17} /></button>
+          <div className="head-menu-wrap">
+            <button className="icon-btn" title="More" onClick={() => setShowHeadMenu(s => !s)}>
+              <EllipsisVertical size={17} />
+            </button>
+            {showHeadMenu && (
+              <>
+                <div className="menu-backdrop" onClick={() => setShowHeadMenu(false)} />
+                <div className="msg-menu head-menu">
+                  <button className={blockedByMe ? "" : "danger"} onClick={toggleBlock}>
+                    {blockedByMe ? "Unblock user" : "Block user"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
+      {/* 👈 NEW — pinned message bar */}
+      {pinnedMsg && (
+        <div className="pin-bar" onClick={() => jumpToMessage(pinnedMsg._id)}>
+          <Pin size={14} />
+          <div className="pin-bar-text">
+            <p className="pin-bar-name">Pinned · {pinnedMsg.sender === username ? "You" : pinnedMsg.sender}</p>
+            <p className="pin-bar-content">{previewText(pinnedMsg)}</p>
+          </div>
+          <button title="Unpin" onClick={(e) => { e.stopPropagation(); unpinCurrent(); }}><X size={14} /></button>
+        </div>
+      )}
+
       <div className="msg-wrapper">
         <div className="msg-scroll" ref={scrollRef} onScroll={handleScroll}>
+          {loadingOlder && <div className="older-loader">Loading older messages…</div>}
+
           {messages.map((m, i) => {
             const mine = m.sender === username;
             const canDeleteForEveryone = mine && !m.deletedForEveryone;
@@ -520,6 +666,7 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
                       </div>
 
                       <div className="msg-meta">
+                        {m.pinned && !m.deletedForEveryone && <Pin size={12} className="pinned-mark" />}
                         <span>{formatTime(m.createdAt)}{m.edited ? " · edited" : ""}</span>
                         {mine && !m.deletedForEveryone && <TickIcon m={m} />}
                         {!m.deletedForEveryone && (
@@ -535,6 +682,9 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
                           <div className="menu-backdrop" onClick={() => setOpenMenuId(null)} />
                           <div className="msg-menu">
                             {!m.deletedForEveryone && <button onClick={() => startReply(m)}>Reply</button>}
+                            {!m.deletedForEveryone && (
+                              <button onClick={() => pinMessage(m)}>{m.pinned ? "Unpin" : "Pin"}</button>
+                            )}
                             {canEdit && <button onClick={() => startEdit(m)}>Edit</button>}
                             <button onClick={() => deleteMessage(m._id, false)}>Delete for me</button>
                             {canDeleteForEveryone && (
@@ -566,7 +716,9 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
       </div>
 
       <div className="composer-wrap">
-        {replyTarget && !isRecording && (
+        {blockNote && <p className="block-note">{blockNote}</p>}
+
+        {replyTarget && !isRecording && !blockedByMe && (
           <div className="quote-bar">
             <div className="quote-bar-text">
               <p className="quote-bar-name">{replyTarget.sender === username ? "You" : replyTarget.sender}</p>
@@ -576,7 +728,7 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
           </div>
         )}
 
-        {pendingFile && !isRecording && (
+        {pendingFile && !isRecording && !blockedByMe && (
           <div className="attach-preview">
             {previewUrl ? <img src={previewUrl} alt="preview" /> : <div className="file-chip"><FileText size={22} /></div>}
             <div className="attach-info">
@@ -587,7 +739,7 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
           </div>
         )}
 
-        {showEmoji && !isRecording && (
+        {showEmoji && !isRecording && !blockedByMe && (
           <>
             <div className="menu-backdrop" onClick={() => setShowEmoji(false)} />
             <div className="emoji-pop">
@@ -598,12 +750,17 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
           </>
         )}
 
-        {micDenied && !isRecording && (
+        {micDenied && !isRecording && !blockedByMe && (
           <p className="mic-denied-note">Mic access blocked — allow microphone permission in your browser to record voice notes.</p>
         )}
 
-        {isRecording ? (
-          // 👈 NEW — recording bar replaces the normal composer while recording
+        {blockedByMe ? (
+          // 👈 NEW — blocked user ke saath composer band
+          <div className="blocked-bar">
+            <span>You blocked {otherUser}.</span>
+            <button onClick={toggleBlock}>Unblock</button>
+          </div>
+        ) : isRecording ? (
           <div className="composer recording">
             <button className="icon-btn round danger-ghost" title="Cancel" onClick={() => stopRecording(true)}>
               <Trash2 size={17} />

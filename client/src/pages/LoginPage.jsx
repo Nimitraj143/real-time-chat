@@ -2,6 +2,9 @@
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 
+const API = "https://real-time-chat-vt6f.onrender.com";
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const styles = {
   page: {
     minHeight: "100dvh",
@@ -72,37 +75,102 @@ const styles = {
     marginBottom: 10, textAlign: "center",
     position: "relative", zIndex: 1,
   },
+  info: {
+    color: "#3fa77a", fontSize: 13,
+    marginBottom: 10, textAlign: "center",
+    position: "relative", zIndex: 1,
+  },
   link: {
-    textAlign: "center", marginTop: 20, cursor: "pointer",
+    textAlign: "center", marginTop: 16, cursor: "pointer",
     color: "#7c83d0", fontSize: 13,
     position: "relative", zIndex: 1,
   },
 };
 
+const focusShadow = "inset 6px 6px 12px #ccceda, inset -4px -4px 8px #fff, 0 0 0 1.5px #7c83d0";
+const blurShadow  = "inset 5px 5px 10px #d0d2dc, inset -5px -5px 10px #ffffff";
+
+function Field({ label, ...props }) {
+  return (
+    <>
+      <label style={styles.label}>{label}</label>
+      <input
+        {...props}
+        required
+        style={styles.input}
+        onFocus={e => (e.target.style.boxShadow = focusShadow)}
+        onBlur={e => (e.target.style.boxShadow = blurShadow)}
+      />
+    </>
+  );
+}
+
+const TITLES = {
+  login:    ["Welcome back", "Sign in to your chat"],
+  register: ["Create Account", "Join the chat"],
+  forgot:   ["Forgot Password", "We'll email you a 6-digit OTP"],
+  reset:    ["Reset Password", "Enter the OTP and a new password"],
+};
+
 export default function LoginPage() {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [isRegister, setIsRegister] = useState(false);
-  const [error, setError] = useState("");
+  // mode: "login" | "register" | "forgot" | "reset"
+  const [mode, setMode]               = useState("login");
+  const [username, setUsername]       = useState("");
+  const [email, setEmail]             = useState("");
+  const [password, setPassword]       = useState("");
+  const [otp, setOtp]                 = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [error, setError]             = useState("");
+  const [info, setInfo]               = useState("");
+  const [loading, setLoading]         = useState(false);
   const navigate = useNavigate();
+
+  const switchMode = (m) => { setMode(m); setError(""); setInfo(""); };
 
   const submit = async (e) => {
     e.preventDefault();
     setError("");
-    if (isRegister && password.length < 8) {
-      setError("Password must be at least 8 characters");
-      return;
+    setInfo("");
+
+    // ----- client side checks -----
+    if (mode === "register") {
+      if (!EMAIL_RE.test(email)) { setError("Enter a valid email address"); return; }
+      if (password.length < 8)   { setError("Password must be at least 8 characters"); return; }
     }
-    const endpoint = isRegister ? "register" : "login";
+    if (mode === "forgot" && !EMAIL_RE.test(email)) { setError("Enter a valid email address"); return; }
+    if (mode === "reset" && newPassword.length < 8) { setError("Password must be at least 8 characters"); return; }
+
+    setLoading(true);
     try {
-      const { data } = await axios.post(`https://real-time-chat-vt6f.onrender.com/api/auth/${endpoint}`, { username, password });
+      if (mode === "forgot") {
+        await axios.post(`${API}/api/auth/forgot-password`, { email });
+        setMode("reset");
+        setInfo("If this email is registered, an OTP has been sent (valid 10 min).");
+        return;
+      }
+
+      if (mode === "reset") {
+        const { data } = await axios.post(`${API}/api/auth/reset-password`, { email, otp, newPassword });
+        setMode("login");
+        setPassword(""); setOtp(""); setNewPassword("");
+        setInfo(data.message || "Password reset successful. Please login.");
+        return;
+      }
+
+      const body = mode === "register" ? { username, email, password } : { username, password };
+      const { data } = await axios.post(`${API}/api/auth/${mode}`, body);
       localStorage.setItem("token", data.token);
       localStorage.setItem("username", data.username);
       navigate("/chat");
     } catch (err) {
       setError(err.response?.data?.message || "Something went wrong");
+    } finally {
+      setLoading(false);
     }
   };
+
+  const [title, sub] = TITLES[mode];
+  const btnText = { login: "Login", register: "Register", forgot: "Send OTP", reset: "Reset Password" }[mode];
 
   return (
     <div style={styles.page}>
@@ -110,50 +178,62 @@ export default function LoginPage() {
         <div style={styles.orb1} />
         <div style={styles.orb2} />
 
-        <h2 style={styles.title}>{isRegister ? "Create Account" : "Welcome back"}</h2>
-        <p style={styles.sub}>{isRegister ? "Join the chat" : "Sign in to your chat"}</p>
+        <h2 style={styles.title}>{title}</h2>
+        <p style={styles.sub}>{sub}</p>
 
         <form onSubmit={submit}>
-          <label style={styles.label}>Username</label>
-          <input
-            placeholder="you@example.com"
-            value={username}
-            onChange={e => setUsername(e.target.value)}
-            required
-            style={styles.input}
-            onFocus={e => e.target.style.boxShadow = "inset 6px 6px 12px #ccceda, inset -4px -4px 8px #fff, 0 0 0 1.5px #7c83d0"}
-            onBlur={e => e.target.style.boxShadow = "inset 5px 5px 10px #d0d2dc, inset -5px -5px 10px #ffffff"}
-          />
-          <label style={styles.label}>Password</label>
-          <input
-            placeholder="••••••••"
-            type="password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            required
-            style={styles.input}
-            onFocus={e => e.target.style.boxShadow = "inset 6px 6px 12px #ccceda, inset -4px -4px 8px #fff, 0 0 0 1.5px #7c83d0"}
-            onBlur={e => e.target.style.boxShadow = "inset 5px 5px 10px #d0d2dc, inset -5px -5px 10px #ffffff"}
-          />
+          {(mode === "login" || mode === "register") && (
+            <Field label="Username" placeholder="your username" value={username}
+              onChange={e => setUsername(e.target.value)} />
+          )}
+
+          {(mode === "register" || mode === "forgot" || mode === "reset") && (
+            <Field label="Email" type="email" placeholder="you@gmail.com" value={email}
+              onChange={e => setEmail(e.target.value)} readOnly={mode === "reset"} />
+          )}
+
+          {(mode === "login" || mode === "register") && (
+            <Field label="Password" type="password" placeholder="••••••••" value={password}
+              onChange={e => setPassword(e.target.value)} />
+          )}
+
+          {mode === "reset" && (
+            <>
+              <Field label="OTP" inputMode="numeric" maxLength={6} placeholder="6-digit OTP" value={otp}
+                onChange={e => setOtp(e.target.value.replace(/\D/g, ""))} />
+              <Field label="New Password" type="password" placeholder="min 8 characters" value={newPassword}
+                onChange={e => setNewPassword(e.target.value)} />
+            </>
+          )}
 
           {error && <p style={styles.error}>{error}</p>}
+          {info  && <p style={styles.info}>{info}</p>}
 
           <button
             type="submit"
-            style={styles.button}
-            onMouseEnter={e => { e.target.style.opacity = "0.9"; e.target.style.transform = "translateY(-1px)"; }}
-            onMouseLeave={e => { e.target.style.opacity = "1"; e.target.style.transform = "translateY(0)"; }}
+            disabled={loading}
+            style={{ ...styles.button, opacity: loading ? 0.7 : 1 }}
+            onMouseEnter={e => { e.target.style.transform = "translateY(-1px)"; }}
+            onMouseLeave={e => { e.target.style.transform = "translateY(0)"; }}
           >
-            {isRegister ? "Register" : "Login"}
+            {loading ? "Please wait…" : btnText}
           </button>
         </form>
 
-        <p
-          onClick={() => setIsRegister(!isRegister)}
-          style={styles.link}
-        >
-          {isRegister ? "Already have an account? Login" : "Don't have an account? Register"}
-        </p>
+        {mode === "login" && (
+          <p onClick={() => switchMode("forgot")} style={styles.link}>Forgot password?</p>
+        )}
+
+        {(mode === "login" || mode === "register") ? (
+          <p onClick={() => switchMode(mode === "login" ? "register" : "login")}
+             style={{ ...styles.link, marginTop: 10 }}>
+            {mode === "register" ? "Already have an account? Login" : "Don't have an account? Register"}
+          </p>
+        ) : (
+          <p onClick={() => switchMode("login")} style={{ ...styles.link, marginTop: 10 }}>
+            Back to login
+          </p>
+        )}
       </div>
     </div>
   );
