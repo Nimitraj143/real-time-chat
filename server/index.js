@@ -6,12 +6,12 @@ const path       = require("path");
 const fs         = require("fs");
 const multer     = require("multer");
 const rateLimit  = require("express-rate-limit");
+const jwt        = require("jsonwebtoken");
 const { Server } = require("socket.io");
 const mongoose   = require("mongoose");
 const cors       = require("cors");
 require("dotenv").config();
 
-// Koi unexpected error aaye toh server band na ho
 process.on("unhandledRejection", (err) => console.error("Unhandled rejection:", err));
 process.on("uncaughtException",  (err) => console.error("Uncaught exception:", err));
 
@@ -25,7 +25,19 @@ const io     = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-// Render proxy ke peeche hai, warna rate limit sabko ek hi IP samjhega
+// ---------- SOCKET AUTH MIDDLEWARE ----------
+io.use((socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error("No token provided"));
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    socket.username = decoded.username; // ab ye trusted hai, client se nahi aaya
+    next();
+  } catch (err) {
+    next(new Error("Invalid or expired token"));
+  }
+});
+
 app.set("trust proxy", 1);
 
 app.use(cors());
@@ -80,7 +92,6 @@ app.use("/api/auth",          require("./routes/auth"));
 app.use("/api/users",         require("./routes/users"));
 app.use("/api/conversations", require("./routes/conversations"));
 
-// Express ke andar koi bhi error aaye toh JSON mein jawab do
 app.use((err, req, res, next) => {
   console.error("Express error:", err);
   if (res.headersSent) return next(err);
@@ -90,17 +101,16 @@ app.use((err, req, res, next) => {
 const onlineUsers = {};
 const activeConv  = {};
 
-// Har socket handler ko try/catch mein wrap karta hai
 const safe = (name, fn) => async (...args) => {
   try { await fn(...args); }
   catch (err) { console.error(`${name} error:`, err); }
 };
 
 io.on("connection", (socket) => {
-  console.log("Socket connected:", socket.id);
+  console.log("Socket connected:", socket.id, "user:", socket.username);
 
-  socket.on("user_online", safe("user_online", async (username) => {
-    if (!username || typeof username !== "string") return;
+  socket.on("user_online", safe("user_online", async () => {
+    const username = socket.username;
     onlineUsers[username] = socket.id;
     io.emit("online_users", Object.keys(onlineUsers));
 
@@ -110,19 +120,22 @@ io.on("connection", (socket) => {
     socket.emit("initial_last_seen", map);
   }));
 
-  socket.on("join_conversation", safe("join_conversation", ({ convId, username }) => {
+  socket.on("join_conversation", safe("join_conversation", ({ convId }) => {
+    const username = socket.username;
     if (!convId) return;
     socket.join(String(convId));
-    if (username) activeConv[username] = String(convId);
+    activeConv[username] = String(convId);
   }));
 
-  socket.on("leave_conversation", safe("leave_conversation", ({ convId, username }) => {
+  socket.on("leave_conversation", safe("leave_conversation", ({ convId }) => {
+    const username = socket.username;
     if (!convId) return;
     socket.leave(String(convId));
-    if (username && activeConv[username] === String(convId)) delete activeConv[username];
+    if (activeConv[username] === String(convId)) delete activeConv[username];
   }));
 
-  socket.on("send_message", safe("send_message", async ({ convId, sender, content, type, fileUrl, fileName, duration, replyTo }) => {
+  socket.on("send_message", safe("send_message", async ({ convId, content, type, fileUrl, fileName, duration, replyTo }) => {
+    const sender  = socket.username; // client se nahi le rahe
     const msgType = type || "text";
     const text    = typeof content === "string" ? content : "";
 
@@ -153,7 +166,6 @@ io.on("connection", (socket) => {
         return;
       }
       if (otherDoc?.blockedUsers?.includes(sender)) {
-        // blocked hone ki baat reveal nahi karte
         socket.emit("message_blocked", { convId, reason: "Message could not be delivered." });
         return;
       }
@@ -217,7 +229,8 @@ io.on("connection", (socket) => {
     });
   }));
 
-  socket.on("edit_message", safe("edit_message", async ({ messageId, convId, newContent, username }) => {
+  socket.on("edit_message", safe("edit_message", async ({ messageId, convId, newContent }) => {
+    const username = socket.username;
     if (typeof newContent !== "string" || !newContent.trim() || newContent.length > 5000) return;
     const msg = await Message.findById(messageId);
     if (!msg || msg.sender !== username || msg.deletedForEveryone || msg.type !== "text") return;
@@ -228,7 +241,8 @@ io.on("connection", (socket) => {
   }));
 
   // ---------- PIN MESSAGE (ek conversation mein ek hi pin) ----------
-  socket.on("pin_message", safe("pin_message", async ({ messageId, convId, username, pin }) => {
+  socket.on("pin_message", safe("pin_message", async ({ messageId, convId, pin }) => {
+    const username = socket.username;
     const conv = await Conversation.findById(convId);
     if (!conv || !conv.members.includes(username)) return;
     const msg = await Message.findById(messageId);
@@ -246,17 +260,20 @@ io.on("connection", (socket) => {
     }
   }));
 
-  socket.on("typing", safe("typing", ({ convId, sender, receiver }) => {
+  socket.on("typing", safe("typing", ({ convId, receiver }) => {
+    const sender = socket.username;
     const targetSocketId = onlineUsers[receiver];
     if (targetSocketId) io.to(targetSocketId).emit("user_typing", { convId, sender });
   }));
 
-  socket.on("stop_typing", safe("stop_typing", ({ convId, sender, receiver }) => {
+  socket.on("stop_typing", safe("stop_typing", ({ convId, receiver }) => {
+    const sender = socket.username;
     const targetSocketId = onlineUsers[receiver];
     if (targetSocketId) io.to(targetSocketId).emit("user_stop_typing", { convId, sender });
   }));
 
-  socket.on("seen_conversation", safe("seen_conversation", async ({ convId, username }) => {
+  socket.on("seen_conversation", safe("seen_conversation", async ({ convId }) => {
+    const username = socket.username;
     const conv = await Conversation.findById(convId);
     if (!conv) return;
     if (!conv.unreadCount) conv.unreadCount = {};
@@ -271,7 +288,8 @@ io.on("connection", (socket) => {
     });
   }));
 
-  socket.on("delete_message", safe("delete_message", async ({ messageId, convId, username, forEveryone }) => {
+  socket.on("delete_message", safe("delete_message", async ({ messageId, convId, forEveryone }) => {
+    const username = socket.username;
     const msg = await Message.findById(messageId);
     if (!msg) return;
 
@@ -304,15 +322,13 @@ io.on("connection", (socket) => {
   }));
 
   socket.on("disconnect", safe("disconnect", async () => {
-    for (const [username, id] of Object.entries(onlineUsers)) {
-      if (id === socket.id) {
-        delete onlineUsers[username];
-        delete activeConv[username];
-        const now = new Date();
-        await User.findOneAndUpdate({ username }, { lastSeen: now });
-        io.emit("user_last_seen", { username, lastSeen: now });
-        break;
-      }
+    const username = socket.username;
+    if (onlineUsers[username] === socket.id) {
+      delete onlineUsers[username];
+      delete activeConv[username];
+      const now = new Date();
+      await User.findOneAndUpdate({ username }, { lastSeen: now });
+      io.emit("user_last_seen", { username, lastSeen: now });
     }
     io.emit("online_users", Object.keys(onlineUsers));
   }));

@@ -2,7 +2,7 @@
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { MessageCircle } from "lucide-react";
-import { socket } from "../socket";
+import { socket, connectSocket } from "../socket";
 import Sidebar from "../components/Sidebar";
 import Chat from "../components/Chat";
 
@@ -64,7 +64,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!token) { navigate("/login"); return; }
-    socket.connect();
+    connectSocket(token);
     socket.emit("user_online", username);
 
     axios.get(`${API}/api/conversations`, {
