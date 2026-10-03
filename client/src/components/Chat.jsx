@@ -1,5 +1,6 @@
 ﻿import { Fragment, useEffect, useLayoutEffect, useState, useRef } from "react";
 import axios from "axios";
+import { ExplainCard } from "./AIAssistant";
 import { socket } from "../socket";
 import {
   Phone, Video, EllipsisVertical, ArrowLeft, ArrowDown,
@@ -10,7 +11,6 @@ import {
 const TYPING_TIMEOUT = 2000;
 const PAGE_SIZE = 30;
 const API = "https://real-time-chat-vt6f.onrender.com";
-
 const EMOJIS = [
   "😀","😂","🥹","😍","😘","😎","🤔","😅",
   "😭","😡","🥳","🤝","👍","👎","👏","🙏",
@@ -148,6 +148,7 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
   const [lightbox, setLightbox]       = useState(null);
   const [replyTarget, setReplyTarget] = useState(null);
   const [highlightId, setHighlightId] = useState(null);
+  const [explainId, setExplainId] = useState(null);
 
   // 👈 NEW — pagination / pin / block state
   const [hasMore, setHasMore]           = useState(false);
@@ -202,6 +203,7 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
     setPendingFile(null);
     setPreviewUrl(null);
     setReplyTarget(null);
+    setExplainId(null);
     nearBottomRef.current = true;
 
     // 👈 NEW — sirf latest 30 messages
@@ -663,6 +665,15 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
                           </div>
                         )}
                         {renderMessageContent(m)}
+                        {explainId === m._id && (
+                        <ExplainCard
+                          api={API}
+                          token={token}
+                          convId={conv._id}
+                          messageId={m._id}
+                          onClose={() => setExplainId(null)}
+                        />
+                      )}
                       </div>
 
                       <div className="msg-meta">
@@ -682,6 +693,9 @@ export default function Chat({ conv, username, token, onlineUsers, isMobile, onB
                           <div className="menu-backdrop" onClick={() => setOpenMenuId(null)} />
                           <div className="msg-menu">
                             {!m.deletedForEveryone && <button onClick={() => startReply(m)}>Reply</button>}
+                            {m.type === "text" && !m.deletedForEveryone && (
+                              <button onClick={() => { setExplainId(m._id); setOpenMenuId(null); }}>✨ Explain</button>
+                            )}
                             {!m.deletedForEveryone && (
                               <button onClick={() => pinMessage(m)}>{m.pinned ? "Unpin" : "Pin"}</button>
                             )}

@@ -18,6 +18,7 @@ process.on("uncaughtException",  (err) => console.error("Uncaught exception:", e
 const Message      = require("./models/Message");
 const Conversation = require("./models/Conversation");
 const User         = require("./models/User");
+const aiRoutes     = require("./routes/ai");   // AI feature (dotenv ke baad)
 
 const app    = express();
 const server = http.createServer(app);
@@ -91,6 +92,7 @@ app.post("/api/upload", uploadLimiter, (req, res) => {
 app.use("/api/auth",          require("./routes/auth"));
 app.use("/api/users",         require("./routes/users"));
 app.use("/api/conversations", require("./routes/conversations"));
+app.use("/api/ai",            aiRoutes);   // express.json() ke BAAD, isliye body milegi
 
 app.use((err, req, res, next) => {
   console.error("Express error:", err);

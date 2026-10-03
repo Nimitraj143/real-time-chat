@@ -1,6 +1,9 @@
 ﻿import { useState, useEffect } from "react";
 import axios from "axios";
-import { Search, SquarePen, Bookmark, LogOut, Sun, Moon } from "lucide-react";
+import { Search, SquarePen, Bookmark, LogOut, Sun, Moon, Sparkles } from "lucide-react";
+
+
+const API = "https://real-time-chat-vt6f.onrender.com";
 
 const avatarColors = [
   "linear-gradient(135deg,#ff8a9b,#ff7a8a)",
@@ -14,6 +17,7 @@ export default function Sidebar({
   conversations, activeConv, onSelectConv, onOpenChat, onlineUsers,
   username, onLogout, token, isMobile, typingMap = {},
   theme, onToggleTheme,
+  onOpenAI, aiActive,
 }) {
   const [search, setSearch]         = useState("");
   const [results, setResults]       = useState([]);
@@ -24,7 +28,7 @@ export default function Sidebar({
     const t = setTimeout(async () => {
       try {
         const { data } = await axios.get(
-          `https://real-time-chat-vt6f.onrender.com/api/users/search?q=${encodeURIComponent(search)}`,
+          `${API}/api/users/search?q=${encodeURIComponent(search)}`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         setResults(data);
@@ -60,6 +64,14 @@ export default function Sidebar({
           <Bookmark size={17} />
         </button>
         <span className="spacer" />
+        <button
+          className="icon-btn"
+          title="AI Assistant"
+          onClick={onOpenAI}
+          style={aiActive ? { background: "rgba(124,92,255,0.25)", color: "#9b8cff" } : undefined}
+        >
+          <Sparkles size={17} />
+        </button>
         <button className="icon-btn" title={isDark ? "Switch to light mode" : "Switch to dark mode"} onClick={onToggleTheme}>
           {isDark ? <Sun size={17} /> : <Moon size={17} />}
         </button>

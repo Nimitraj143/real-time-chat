@@ -5,7 +5,9 @@ import { MessageCircle } from "lucide-react";
 import { socket, connectSocket } from "../socket";
 import Sidebar from "../components/Sidebar";
 import Chat from "../components/Chat";
+import AIChat from "../components/AIChat";
 
+// NOTE: test ke liye localhost; deploy se pehle wapas "https://real-time-chat-vt6f.onrender.com" kar dena
 const API = "https://real-time-chat-vt6f.onrender.com";
 
 function playNotificationSound() {
@@ -42,6 +44,10 @@ export default function ChatPage() {
   const [lastSeenMap, setLastSeenMap]     = useState({});
   const [theme, setTheme]                 = useState(getInitialTheme);
   const [myAvatar, setMyAvatar]           = useState(localStorage.getItem("avatarUrl") || null);
+
+  // AI assistant chat (standalone, like Meta AI)
+  const [showAI, setShowAI]         = useState(false);
+  const [aiMessages, setAiMessages] = useState([]);
 
   const navigate  = useNavigate();
   const username  = localStorage.getItem("username");
@@ -125,6 +131,7 @@ export default function ChatPage() {
   }, []);
 
   const selectConv = (conv) => {
+    setShowAI(false);
     setActiveConv(conv);
     socket.emit("seen_conversation", { convId: conv._id, username });
     setConversations(prev => prev.map(c =>
@@ -133,6 +140,7 @@ export default function ChatPage() {
   };
 
   const openChat = async (otherUser, otherAvatar) => {
+    setShowAI(false);
     const { data } = await axios.post(`${API}/api/conversations`,
       { otherUser },
       { headers: { Authorization: `Bearer ${token}` } }
@@ -142,6 +150,12 @@ export default function ChatPage() {
       setConversations(prev => [{ ...data, otherUserInfo: { username: otherUser, avatarUrl: otherAvatar } }, ...prev]);
     }
     socket.emit("seen_conversation", { convId: data._id, username });
+  };
+
+  // Navbar ke AI icon par click
+  const openAI = () => {
+    setActiveConv(null);
+    setShowAI(true);
   };
 
   const deleteConv = async (convId) => {
@@ -166,12 +180,13 @@ export default function ChatPage() {
     localStorage.removeItem("token");
     localStorage.removeItem("username");
     localStorage.removeItem("avatarUrl");
+    setAiMessages([]);
     socket.disconnect();
     navigate("/login");
   };
 
-  const showSidebar = !isMobile || (isMobile && !activeConv);
-  const showChat    = !isMobile || (isMobile && !!activeConv);
+  const showSidebar = !isMobile || (isMobile && !activeConv && !showAI);
+  const showChat    = !isMobile || (isMobile && (!!activeConv || showAI));
 
   return (
     <div className="app-shell">
@@ -192,28 +207,39 @@ export default function ChatPage() {
           myAvatar={myAvatar}
           onAvatarChange={handleAvatarChange}
           onDeleteConv={deleteConv}
+          onOpenAI={openAI}
+          aiActive={showAI}
         />
       )}
       {showChat && (
-        activeConv
-          ? <Chat
-              conv={activeConv}
-              username={username}
+        showAI
+          ? <AIChat
+              api={API}
               token={token}
-              onlineUsers={onlineUsers}
+              messages={aiMessages}
+              setMessages={setAiMessages}
               isMobile={isMobile}
-              onBack={() => setActiveConv(null)}
-              isOtherTyping={!!typingMap[activeConv._id]}
-              lastSeen={lastSeenMap[activeConv.otherUser || activeConv.members?.find(m => m !== username)]}
-              otherAvatar={activeConv.otherAvatar || activeConv.otherUserInfo?.avatarUrl}
+              onBack={() => setShowAI(false)}
             />
-          : (
-            <div className="panel chat-panel empty-state">
-              <div className="empty-icon"><MessageCircle size={32} /></div>
-              <p className="empty-title">Your messages</p>
-              <p className="empty-sub">Pick a conversation or search for a user to start chatting.</p>
-            </div>
-          )
+          : activeConv
+            ? <Chat
+                conv={activeConv}
+                username={username}
+                token={token}
+                onlineUsers={onlineUsers}
+                isMobile={isMobile}
+                onBack={() => setActiveConv(null)}
+                isOtherTyping={!!typingMap[activeConv._id]}
+                lastSeen={lastSeenMap[activeConv.otherUser || activeConv.members?.find(m => m !== username)]}
+                otherAvatar={activeConv.otherAvatar || activeConv.otherUserInfo?.avatarUrl}
+              />
+            : (
+              <div className="panel chat-panel empty-state">
+                <div className="empty-icon"><MessageCircle size={32} /></div>
+                <p className="empty-title">Your messages</p>
+                <p className="empty-sub">Pick a conversation or search for a user to start chatting.</p>
+              </div>
+            )
       )}
     </div>
   );
